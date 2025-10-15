@@ -1,0 +1,47 @@
+[
+    {
+        "workEffortId": "M10001"
+    },
+
+    {
+        "workEffortId": "M10001",
+        "facilityId": "FAC1001",
+        "status": "IN_PROGRESS",
+        "inventoryCountImports": [
+            {
+                "inventoryCountImportId": "ICI10001",
+                "assignedTo": "Alice",
+                "createdDate": "1755699540000",
+                "dueDate": "1755699540000",
+                "status": "SUBMITTED",
+                "inventoryCountImportItems": [
+                    {
+                        "productId": "P1001",
+                        "quantity": 150
+                    },
+                    {
+                        "productId": "P1002",
+                        "quantity": 200
+                    }
+                ]
+            },
+            {
+                "inventoryCountImportId": "ICI10002",
+                "assignedTo": "Alice",
+                "createdDate": "1755699540000",
+                "dueDate": "1755699540000",
+                "status": "SUBMITTED",
+                "inventoryCountImportItems": [
+                    {
+                        "productId": "P1001",
+                        "quantity": 350
+                    },
+                    {
+                        "productId": "P1003",
+                        "quantity": 150
+                    }
+                ]
+            }
+        ]
+    }
+]
