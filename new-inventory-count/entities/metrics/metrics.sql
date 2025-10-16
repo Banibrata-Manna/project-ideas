@@ -42,8 +42,8 @@ SELECT AVG(distinct_product_count) FROM (
         ici.inventory_count_import_id AS import_id,
         COUNT(DISTINCT icii.product_id) AS distinct_product_count
     FROM inventory_count_import ici
-             JOIN inventory_count_import_item icii
-                  ON icii.inventory_count_import_id = ici.inventory_count_import_id
+    JOIN inventory_count_import_item icii
+    ON icii.inventory_count_import_id = ici.inventory_count_import_id
     WHERE ici.count_type_enum_id = 'HARD_COUNT'
     GROUP BY ici.inventory_count_import_id
 ) as C;
