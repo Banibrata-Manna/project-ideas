@@ -1,0 +1,23 @@
+{
+  "importId": "M10001",
+  "importItems": [
+    {
+      "importItemSeqId": "01",
+      "productId": "M10001",
+      "quantity": 10
+    },
+    {
+      "importItemSeqId": "05",
+      "productId": "M10005",
+      "quantity": 10
+    },
+    {
+      "productId": "M10008",
+      "quantity": 10
+    },
+    {
+      "productIdentifier": "MH890-XXL-Blue",
+      "quantity": 10
+    }
+  ]
+}
