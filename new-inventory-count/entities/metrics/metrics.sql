@@ -5,7 +5,7 @@ SELECT
     COUNT(ici.inventory_count_import_id)
 FROM inventory_count_import ici GROUP BY ici.count_type_enum_id;
 
--- Maximum number of products to be counted in directd count.
+-- Maximum number of products to be counted in directed count.
 SELECT ici.inventory_count_import_id,
        COUNT(DISTINCT icii.product_id) AS distinct_product_count
 FROM inventory_count_import ici
