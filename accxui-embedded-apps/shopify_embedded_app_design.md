@@ -20,7 +20,7 @@ sequenceDiagram
     Shopify->>Page: Loads App iframe (passes ?host=...&apiKey=... in URL)
     Page->>Composable: Calls appBridgeLogin(apiKey, host)
     
-    rect rgb(40, 44, 52)
+    rect rgba(164, 169, 177, 1)
     Note over Composable: Step 1: Initialization
     Composable->>Composable: createShopifyAppBridge(apiKey, host)
     Composable->>Store: Stores apiKey, host, and Bridge Instance
