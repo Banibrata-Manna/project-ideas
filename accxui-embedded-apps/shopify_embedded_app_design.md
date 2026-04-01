@@ -59,6 +59,7 @@ export const useEmbeddedAppStore = defineStore('embeddedAppStore', {
     },
     oms: '',
     maarg: '',
+    shop: '',
     apiKey: '',
     host: '',
     shopifyAppBridge: null as any
