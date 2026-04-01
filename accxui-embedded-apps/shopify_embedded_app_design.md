@@ -73,25 +73,26 @@ The composable handles exactly what the diagram depicts, acting as the integrati
 
 *Conceptual Structure of `useShopify.ts`:*
 ```typescript
-import { Scanner, Features, Group } from '@shopify/app-bridge/actions';
-import { useEmbeddedAppStore } from "@/stores/embeddedAppStore";
+import { Scanner, Features, Group, Redirect } from '@shopify/app-bridge/actions';
+import { embeddedApp } from "../store/embeddedAppAuth";
 import { createApp } from "@shopify/app-bridge";
 import { getSessionToken } from "@shopify/app-bridge-utils";
+import api from '../core/remoteApi';
 
 export function useShopify() {
-  const store = useEmbeddedAppStore();
+  const store = embeddedApp();
 
   const createShopifyAppBridge = async (shop: string, host: string) => {
   try {
     if (!shop || !host) {
       throw new Error("Shop or host missing");
     }
-    const apiKey = JSON.parse(process.env.VUE_APP_SHOPIFY_SHOP_CONFIG || '{}')[shop]?.apiKey;
+    const apiKey = JSON.parse(import.meta.env.VITE_SHOPIFY_SHOP_CONFIG || '{}')[shop]?.apiKey;
     if (!apiKey) {
       throw new Error("Api Key not found");
     }
     const shopifyAppBridgeConfig = {
-      apiKey: apiKey || '',
+      apiKey: apiKey || '', 
       host: host || '',
       forceRedirect: false,
     };
@@ -121,7 +122,6 @@ const getSessionTokenFromShopify = async (appBridgeConfig: any) => {
 const openPosScanner = (): Promise<any> => {
   return new Promise((resolve, reject) => {
     try {
-      const store = useEmbeddedAppStore();
       const app = store.shopifyAppBridge;
 
       if (!app) {
@@ -160,17 +160,77 @@ const openPosScanner = (): Promise<any> => {
   });
 }
 
-  // Main Orchestrator Function
-  const appBridgeLogin = async (apiKey: string, host: string) => {
+  const appBridgeLogin = async (shop: string, host: string) => {
     try {
+      if (!shop) shop = embeddedApp().shop
+      if (!host) host = embeddedApp().host
+
+      if (!shop || !host) {
+        throw new Error("Shop or host missing");
+      }
+      const shopConfigsStr = import.meta.env.VITE_SHOPIFY_SHOP_CONFIG as string;
+      const shopConfigs = shopConfigsStr ? JSON.parse(shopConfigsStr) : {};
+
+      if (!shopConfigs[shop]) {
+        throw new Error("Shop config not found");
+      }
+
+      const shopConfig = shopConfigs[shop as string];
+      const maargUrl = shopConfig.maarg || '';
+
       // 1. Create Bridge
-      const app = createShopifyAppBridge(apiKey, host);
+      const app = await createShopifyAppBridge(shop, host);
       
       // 2. Get Session Token
       const token = await getSessionTokenFromShopify(app);
+
+      const appState: any = await app.getState();
+
+      if (!appState) {
+        throw new Error("Couldn't get Shopify App Bridge state, cannot proceed further.");
+      }
+      // Since the Shopify Admin doesn't provide location and user details,
+      // we are using the app state to get the POS location and user details in case of POS Embedded Apps.
+      let loginPayload: any = {};
+      loginPayload.sessionToken = token;
+      if (appState.pos?.location?.id) {
+        loginPayload.locationId = appState.pos.location.id
+      }
+      if (appState.pos?.user?.firstName) {
+        loginPayload.firstName = appState.pos.user.firstName;
+      }
+      if (appState.pos?.user?.lastName) {
+        loginPayload.lastName = appState.pos.user.lastName;
+      }
+
+      store.$reset();
       
       // 3. Login API Call
-      await login(token);
+      const loginResp = await api({
+        url: `${maargUrl}/rest/s1/app-bridge/login`,
+        method: 'post',
+        data: loginPayload
+      });
+
+      if (!loginResp.data.token || !loginResp.data.omsInstanceUrl) {
+        throw new Error("Couldn't get token or user from Shopify App Bridge login.");
+      }
+
+      store.$patch((state) => {
+        state.token.value = loginResp.data.token;
+        state.token.expiration = loginResp.data.expiresAt;
+        state.oms = loginResp.data.omsInstanceUrl;
+        state.maarg = maargUrl;
+        state.apiKey = shopConfig.apiKey;
+        state.shop = shop;
+        state.host = host;
+        state.shopifyAppBridge = app;
+        state.posContext = {
+          locationId: appState.pos?.location?.id,
+          firstName: appState.pos?.user?.firstName,
+          lastName: appState.pos?.user?.lastName
+        };
+      });
 
       return true;
     } catch (error) {
@@ -179,12 +239,36 @@ const openPosScanner = (): Promise<any> => {
     }
   };
 
+  const redirect = (url: string) => {
+    if (store.shopifyAppBridge) {
+      Redirect.create(store.shopifyAppBridge).dispatch(Redirect.Action.REMOTE, url);
+    }
+  }
+
+  const authorise = async (shop: string, host: string) => {
+    const shopConfigsStr = import.meta.env.VITE_SHOPIFY_SHOP_CONFIG as string;
+    const shopConfigs = shopConfigsStr ? JSON.parse(shopConfigsStr) : {};
+    const scopes = import.meta.env.VITE_SHOPIFY_SCOPES || '';
+    const shopConfig = shopConfigs[shop];
+    const apiKey = shopConfig ? shopConfig.apiKey : '';
+    const redirectUri = import.meta.env.VITE_SHOPIFY_REDIRECT_URI || '';
+    const permissionUrl = `https://${shop}/admin/oauth/authorize?client_id=${apiKey}&scope=${scopes}&redirect_uri=${redirectUri}`;
+
+    if (window.top == window.self) {
+      window.location.assign(permissionUrl);
+    } else {
+      await createShopifyAppBridge(shop, host);
+      redirect(permissionUrl);
+    }
+  };
+
   return {
     appBridgeLogin,
+    authorise,
     createShopifyAppBridge,
     getSessionTokenFromShopify,
-    login,
-    openPosScanner
+    openPosScanner,
+    redirect
   };
 }
 ```
