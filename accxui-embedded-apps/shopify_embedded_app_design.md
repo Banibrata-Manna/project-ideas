@@ -2,35 +2,35 @@
 
 ## 1. Flow Diagram
 
-Here is the updated sequence diagram. The standalone `ShopifyService` has been removed, and its responsibilities have been absorbed directly into the `useShopify` Composable. 
+Here is the sequence diagram illustrating the embedded app authentication flow using the `useShopify` Composable. 
 
-The primary entry point is `appBridgeLogin`, which sequentially orchestrates creating the bridge, fetching the token, and calling the backend login API.
+The primary entry point is `appBridgeLogin`, which sequentially orchestrates creating the bridge, fetching the token, and calling the backend login API to yield the authentication credentials (`omsInstanceUrl`, `token`, and `expiresAt`).
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor Merchant
     participant Shopify as Shopify Admin (Host UI)
-    participant Page as Shopify.vue (App Route)
+    participant Page as ShopifyLogin.vue (App Route)
     participant Composable as useShopify (Common Composable)
     participant Store as Pinia Store (State Management)
     participant API as Backend (Endpoints)
 
     Merchant->>Shopify: Opens Custom App in Shopify Admin
     Shopify->>Page: Loads App iframe (passes ?host=...&apiKey=... in URL)
-    Page->>Composable: Calls appBridgeLogin(apiKey, host)
+    Page->>Composable: Calls appBridgeLogin(shop, host)
     
     rect rgba(164, 169, 177, 1)
     Note over Composable: Step 1: Initialization
-    Composable->>Composable: createShopifyAppBridge(apiKey, host)
+    Composable->>Composable: createShopifyAppBridge(shop, host)
     Composable->>Store: Stores apiKey, host, and Bridge Instance
     
-    Note over Composable: Step 2: Token Generation
-    Composable->>Composable: getSessionTokenFromShopify()
+    Note over Composable: Step 2: Shopify Session Token Generation
+    Composable->>Composable: getSessionTokenFromShopify(appBridgeConfig)
     
     Note over Composable: Step 3: Backend Authentication
     Composable->>API: login() (API call with Session Token)
-    API-->>Composable: 200 OK (Auth Successful)
+    API-->>Composable: 200 OK (Returns omsInstanceUrl, token, expiresAt)
     end
     
     Composable-->>Page: Returns true (Success)
@@ -41,7 +41,7 @@ sequenceDiagram
 
 ## 2. Design Analysis & Suggestions
 
-By eliminating `ShopifyService` and moving everything into the `useShopify` composable, you consolidate your authentication orchestration into a single, cohesive file.
+By centralizing everything into the `useShopify` composable, we consolidate the authentication orchestration into a single, cohesive module.
 
 ### A. Pinia State Definition (`embeddedAppStore`)
 
@@ -51,7 +51,7 @@ To manage common variables (like Shopify tokens, OMS identifier, and layout conf
 ```typescript
 import { defineStore } from 'pinia';
 
-export const useEmbeddedAppStore = defineStore('embeddedAppStore', {
+export const useEmbeddedAppStore = defineStore('embeddedApp', {
   state: () => ({
     token: {
       value: '',
@@ -275,16 +275,16 @@ const openPosScanner = (): Promise<any> => {
 
 ### C. Route Guard vs Component Handling
 
-Because you eliminated the `ShopifyService` singleton layer, you must ensure that whatever component or router guard invokes `appBridgeLogin` does it safely when the app loads. In `Shopify.vue`:
+You must ensure that whatever component or router guard invokes `appBridgeLogin` does it safely when the app loads. In `ShopifyLogin.vue`:
 
 ```typescript
 import { onMounted } from 'vue';
-import { useRoute } from 'vue-router';
+import router from '@/router';
 import { useShopify } from '@accxui/common/composables/useShopify';
 
 export default {
   setup() {
-    const route = useRoute();
+    const route = router.currentRoute.value;
     const { appBridgeLogin } = useShopify();
     
     // Read from route query
@@ -309,5 +309,135 @@ export default {
 
 ### D. Backend API Request Interceptor remains vital
 
-Even though logging in is handled sequentially, remember that **all** ensuing API calls (like `fetchUserProfile` or `fetchProducts`) must also pass a fresh Session Token. 
-You should still configure your backend HTTP Client (e.g., Axios) to intercept outgoing calls, reach into Pinia for the stored App Bridge instance, and call `getSessionToken(app)` on the fly, appending it to the `Authorization: Bearer` header.
+Even though logging in is handled sequentially, remember that **all** ensuing app setup API calls (like `fetchUserProfile` or `fetchProducts`) must pass exchanged OMS JWT token against the Shopify Session Token.
+Your backend HTTP Client (e.g., Axios) should intercept outgoing calls, retrieve the exchanged backend authentication `OMS JWT token` from the Pinia store (the result of the payload in `appBridgeLogin`), and append it to the `Authorization: Bearer` header.
+
+### E. Session Checking (`useAuth.ts` and `isAuthenticated`)
+
+To seamlessly bridge the gap between cookies (used in standalone environments) and Pinia store token-injection (used via the App Bridge context in embedded apps), the `isAuthenticated` computed property within `useAuth.ts` (across embedded-capable applications) leverages `commonUtil` shared methods.
+
+Instead of directly probing cookies using `cookieHelper()`, the `isAuthenticated` getter dynamically verifies session validity from Universal/Pinia state seamlessly:
+
+```typescript
+const isAuthenticated = computed(() => {
+  let isTokenExpired = false;
+  // commonUtil.getToken() intelligently checks the shared state/environment before falling back to cookies
+  const token = commonUtil.getToken();
+  const expirationTime = Number(commonUtil.getTokenExpiration());
+  if (expirationTime) {
+    const currTime = DateTime.now().toMillis();
+    isTokenExpired = expirationTime < currTime;
+  }
+  return !!(token && !isTokenExpired);
+});
+```
+This architectural decision ensures that the standard Vue application routing and authentication guards (`authGuard`) automatically validate users authenticated exclusively via Shopify App Bridge POS, eradicating the need for separate embedded vs. standalone authentication guard logic paths.
+
+### F. Base URL Resolution (`getOmsURL` and `getMaargURL`)
+
+Similar to the authentication session checks, the core utility methods for resolving the backend APIs prioritize the Pinia state before falling back to cookies.
+
+*   **`getOmsURL()`**: Checks `useEmbeddedAppStore().oms` before querying `cookieHelper().get("oms")`.
+*   **`getMaargURL()`**: Checks `useEmbeddedAppStore().maarg` before querying `cookieHelper().get("maarg")`.
+
+This directly enables reliable environment routing logic regardless of third-party cookie constraints placed on embedded embedded iframes.
+
+### G. Route Guards (`authGuard`)
+
+In standalone applications, an unauthenticated user is universally redirected to the `/login` route. However, in an embedded context, we must redirect them to the `/shopify-login` initializing component instead so the App Bridge OAuth flow can seamlessly execute natively.
+
+The updated `authGuard` handles this conditional routing using `commonUtil.isAppEmbedded()`:
+
+```typescript
+const authGuard = async (to: any, from: any, next: any) => {
+  const { isAuthenticated } = useAuth();
+  if (!isAuthenticated.value) {
+    if (commonUtil.isAppEmbedded()) {
+      next('/shopify-login'); // Trigger Embedded Auth Flow
+    } else {
+      next('/login'); // Trigger Standard Web Auth Flow
+    }
+  } else {
+    next();
+  }
+};
+```
+By implementing this check, embedded instances immediately intercept token depletion and loop directly back into auto-renewing their App Bridge session without surfacing the web login credentials portal.
+
+
+## 3. Specific Component Integrations
+
+When the app runs as an embedded application within Shopify POS, certain native device features (like the camera scanner) are exposed via Shopify App Bridge. The application utilizes `useShopify` and the `embeddedApp` store to seamlessly transition between web-based implementations and native POS implementations.
+
+### A. POS Scanner Integration
+
+Several components across the fulfillment application leverage the embedded POS Scanner to streamline operations directly from Shopify POS hardware.
+
+**Implementation Pattern:**
+Instead of defaulting to the web-based camera scanner, components first check if the app is currently running within a Shopify POS context by verifying `embeddedApp().posContext.locationId`. If true, they invoke the native scanner via `useShopify().openPosScanner()`.
+
+*Example Usage in Components:*
+```typescript
+import { commonUtil, useShopify, useEmbeddedAppStore } from "@common";
+
+const scanCode = async () => {
+  // Check if running in a POS context
+  if (useEmbeddedAppStore().posContext.locationId) {
+    try {
+      // Trigger native Shopify POS scanner
+      const scannedCode = await useShopify().openPosScanner();
+      if (scannedCode) {
+        processScannedCode(scannedCode);
+      }
+    } catch (err) {
+      console.error("POS Scanner error:", err);
+    }
+  } else {
+    // Fallback to standard web camera scanner
+    if (!(await commonUtil.hasWebcamAccess())) {
+      commonUtil.showToast("Camera access not allowed.");
+      return;
+    }
+    // Launch web scanner component...
+  }
+};
+```
+
+### B. Conditional UI Rendering (`isAppEmbedded`)
+
+Components also use `commonUtil.isAppEmbedded()` (which checks `!!useEmbeddedAppStore().shopifyAppBridge`) combined with `useEmbeddedAppStore().posContext.locationId` to conditionally display UI elements that are only applicable outside of the embedded context or specifically within certain POS contexts.
+
+*Example Usage in Templates:*
+```html
+<!-- Only show scan button if NOT embedded, OR if it IS embedded but specifically in a POS context -->
+<ion-button 
+  v-if="!commonUtil.isAppEmbedded() || useEmbeddedAppStore().posContext.locationId" 
+  @click="scanCode()"
+>
+  <ion-icon slot="start" :icon="barcodeOutline" />
+  Scan
+</ion-button>
+```
+
+### C. Facility and Location Filtering (`productStore.ts`)
+
+When running inside the Shopify POS context, an embedded user operates within a specific physical store. The `productStore.ts` (across both apps) handles this by limiting the facilities available to the user based securely on the Shopify POS `locationId`.
+
+During `fetchUserFacilities()`, the state management strictly requests matching OMS facilities assigned to that individual Shopify Location:
+```typescript
+// Only Location's facility for Shopify POS Users.
+if (commonUtil.isAppEmbedded() && useEmbeddedAppStore().posContext.locationId) {
+  resp = await api({
+    url: "oms/shopifyShops/locations",
+    method: "GET",
+    params: {
+      locationId: useEmbeddedAppStore().posContext.locationId
+    }
+  });
+
+  const locations = resp.data;
+  facilityIds = locations.map((location: any) => location.facilityId);
+  // ...
+}
+```
+This guarantees an isolated operational context per terminal, blocking embedded POS users from accidentally accepting or fulfilling orders for an external physical store.
